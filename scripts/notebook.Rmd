@@ -1,0 +1,813 @@
+## Project Description:
+
+This project is focused to analyze and get relevant information about USA injuries occured in 2018 to 2021.
+
+The data was collected by [National Eletronic Injury Surveillance](https://www.cpsc.gov/Research–Statistics/NEISS-Injury-Data)
+
+The dataset contains informations like: type of injuries, sex, age, disposition and body parts affected.
+
+This project will be done in basically 3 steps:
+
+-   Step 1: Analysis
+
+    Data wrangling process and also data Exploratory data analysis.
+
+-   Step 2: Predctive model
+
+    Machine learning model to predict the number of injuries that will occur for the next 12 months. (in this case, all 2022 year).
+
+-   Ste 3: Web App / Deploy
+
+    Web App for analytics and machine learning deployment.
+
+Technical stack:
+
+For this project, I'll be using R language, Shiny Apps and RStudio.
+
+#### Packages:
+
+```{r,warning=FALSE, message=FALSE}
+pacman::p_load(tidyverse,data.table,vroom,operators,plyr,lubridate,forecast,
+               wordcloud,RColorBrewer,wordcloud2,tm)
+```
+
+#### Work Directory:
+
+First of all, let's create a project directory and then separate our scripts, raw and processed data in differents folders. That will help us to keep a more organized (and even effective) workflow.
+
+```{r, warning=FALSE, message=FALSE}
+# set the project directory and create directorys
+main_directory <- "/mnt/sda1/docs/projects/"
+dir.create(paste0(main_directory,"neiss_analytics"))
+dir.create(paste0(main_directory,"neiss","/","data"))
+dir.create(paste0(main_directory,"neiss","/","data","/","raw"))
+dir.create(paste0(main_directory,"neiss","/","data","/","processed"))
+dir.create(paste0(main_directory,"neiss","/","scripts"))
+
+```
+
+```{r, warning=FALSE,message=FALSE,echo=FALSE}
+# copy files for the respective directorys
+file.copy(from = "/home/sandro/Downloads/neiss2018.tsv",
+          to = paste0(main_directory,"neiss/data/raw"))
+file.copy(from = "/home/sandro/Downloads/neiss2019.tsv",
+          to = paste0(main_directory,"neiss/data/raw"))
+file.copy(from = "/home/sandro/Downloads/neiss2020.tsv",
+          to = paste0(main_directory,"neiss/data/raw"))
+file.copy(from = "/home/sandro/Downloads/neiss2021.tsv",
+          to = paste0(main_directory,"neiss/data/raw"))
+
+# and then set the work directory
+setwd(paste0(main_directory,"neiss_analytics"));getwd()
+
+```
+
+```{r,warning=FALSE, message=FALSE}
+## Load data
+df18 <- fread("/mnt/sda1/docs/projects/neiss_analytics/data/raw/neiss2018.tsv", fill=TRUE)
+df19 <- fread("/mnt/sda1/docs/projects/neiss_analytics/data/raw/neiss2019.tsv", fill=TRUE)
+df20 <- fread("/mnt/sda1/docs/projects/neiss_analytics/data/raw/neiss2020.tsv", fill=TRUE)
+df21 <- fread("/mnt/sda1/docs/projects/neiss_analytics/data/raw/neiss2021.tsv", fill=TRUE)
+
+```
+
+After load and set the work directory, it's time to start the data wrangling process. This step is fundamental to actually know the data, visualize some patterns, and make some treatments if it's necessary.
+
+```{r,warning=FALSE, message=FALSE}
+items <- list(df18,df19,df20,df21)
+
+for (i in items){
+  glimpse(i)
+}
+
+```
+
+Looks like all dataset has a similar structure. However, some of them has columns positions in different ways.
+
+To deal with that, let's order the columns in the same direction. This is important because later, we gonna bind our datasets to one.
+
+```{r,warning=FALSE, message=FALSE}
+# creates a order column function
+dtw1 <- function(dataset,name){
+  dataset <- dataset |> 
+     dplyr::select(CPSC_Case_Number,Treatment_Date,Age,
+                        Sex,Race,Other_Race,Hispanic,
+                        Body_Part,Diagnosis,
+                        Other_Diagnosis,Body_Part_2,
+                        Diagnosis_2,Other_Diagnosis_2,
+                        Disposition,Location,
+                        Fire_Involvement,Product_1,
+                        Product_2,Product_3,Alcohol,
+                        Drug,Narrative,Stratum,
+                        PSU,
+                        Weight)
+    return(dataset)
+  assign(name,dataset,envir=.GlobalEnv)
+    
+}
+
+
+dtw2 <- function(dataset,name){
+  dataset <- dataset |>
+    dplyr::select(CPSC_Case_Number,Treatment_Date,
+                  Age,Sex,
+                  Race,
+                  Other_Race,Hispanic,
+                  Body_Part,Diagnosis,
+                  Other_Diagnosis,Body_Part_2,Diagnosis_2,
+                  Other_Diagnosis_2,Disposition,Location,
+                  Fire_Involvement,Product_1,Product_2,
+                  Product_3,Alcohol,Drug,Narrative_1,
+                  Stratum,PSU,Weight) |>
+    dplyr::rename(Narrative = Narrative_1)
+  assign(name,dataset,envir=.GlobalEnv)
+}
+```
+
+```{r, echo = FALSE,include=FALSE,warning=FALSE, message=FALSE}
+# executes the function
+dtw1(df18,"df18")
+dtw1(df19, "df19")
+dtw2(df20, "df20")
+dtw2(df21, "df21")
+
+```
+
+```{r,warning=FALSE, message=FALSE}
+# bind the datasets
+df <- rbind(df18,df19,df20,df21);rm(df18,df19,df20,df21)
+```
+
+```{r,warning=FALSE, message=FALSE}
+# check the new dataset
+df |> glimpse()
+```
+
+Apparently, looks like the dataset has sort of "label-encoding". We will need to check the [data dictonary](https://www.cpsc.gov/Research--Statistics/NEISS-Injury-Data).
+
+This is step is not mandatory, but in this case we gonna replace all the label-encoding for its original values. That will allows us to do the analytical process on a more easy legible way. (We might need to check the NEISS code manual too)
+
+```{r,warning=FALSE, message=FALSE}
+# sex
+df |> select(Sex) |> unique()
+```
+
+According to the NEISS Manual, it will be:
+
+-   0: not recorded
+
+-   1: male
+
+-   2: female
+
+-   3: non binary
+
+As we can see, there are different values than especified in NEISS manual.
+
+its very common, perhaps it indicates type written mistake. As we aren't certain about those, we'll just discard them all.
+
+```{r,warning=FALSE, message=FALSE}
+df <- df |> 
+  dplyr::mutate(Sex=as.integer(Sex),
+         Sex=as.character(Sex)) |> 
+  dplyr::mutate(Sex = plyr::mapvalues(Sex,from=c("0","1","2","3"),
+                               to=c("not recorded","male",
+                                    "female","non binary"))) |> 
+  dplyr::filter(Sex %in% c("not recorded","male","female","non binary"))
+```
+
+```{r,warning=FALSE, message=FALSE}
+# race
+df |> dplyr::select(Race) |> unique()
+```
+
+The replacement follows:
+
+-   0: not recorded
+
+-   1: white
+
+-   2: black/african american
+
+-   3: other
+
+-   4 asian
+
+-   5: american indian/alaska native
+
+-   6: pacific islander
+
+```{r,warning=FALSE, message=FALSE}
+df <- df |> 
+  dplyr::mutate(Race = as.character(Race)) |> 
+  dplyr::mutate(Race = plyr::mapvalues(Race,
+                                       from = c("0","1","2","3","4","5","6"),
+                                to = c("not recorded","white",
+                                       "black/african american",
+                                       "other","asian",
+                                       "american indian/alaska native",
+                                       "native hawaiian / pacific islander")))
+```
+
+```{r,warning=FALSE, message=FALSE}
+df |> dplyr::select(Body_Part) |> unique()
+```
+
+Body Parts is an extensive variable. To replace those values, we'll use the NEISS dictionary. We'll also gonna use the data dictionary to replace others variables from the dataset.
+
+```{r,warning=FALSE, message=FALSE}
+# body_parts dictonary
+body_parts <- fread("/mnt/sda1/docs/projects/neiss_analytics/data/raw/DataDictionary042022.csv")
+
+# replacement by data join
+df <- df |> 
+  dplyr::left_join(body_parts |> 
+                     dplyr::rename(Body_Part = cd_body_part),
+                   by = "Body_Part") |> 
+  dplyr::select(-Body_Part) |>
+  dplyr::rename(Body_Part = body_part)
+
+diag <- fread("/home/sandro/Documentos/diag.csv")
+
+# replacement by data join
+df <- df |> 
+  dplyr::left_join(diag |>dplyr::rename(Diagnosis = cd_diag)) |> 
+  dplyr::select(-Diagnosis) |> 
+  dplyr::rename(Diagnosis = diag)
+
+
+# disposition dictonary
+disposition <- fread("/home/sandro/Documentos/disposition.csv")
+
+# replacment by data join
+df <- df |> 
+  dplyr::left_join(disposition |> na.omit()) |>
+  dplyr::select(-Disposition) |> 
+  dplyr::rename(Disposition = dispositions)
+
+# location dictonary
+location <- fread("/home/sandro/Documentos/location.csv")
+
+# replacement by data join
+df <- df |> 
+  dplyr::left_join(location |> dplyr::rename(Location = cd_location)) |> 
+  dplyr::select(-Location) |>
+  dplyr::rename(Location = location)
+
+# product dictonary
+product <- fread("/mnt/sda1/docs/projects/neiss/data/raw/product.csv")
+
+# replacement by data join
+
+df <- df |> 
+  left_join(product |> dplyr::rename(Product_1 = Code)) |> 
+  dplyr::select(-Product_1) |> 
+  dplyr::rename(Product_1 = `Product Title`)
+
+# final treatments
+df <- df |>
+  dplyr::mutate_if(is.character,tolower) |> 
+  dplyr::mutate_if(is.character,str_trim) |> 
+  dplyr::mutate_if(is.character,str_squish) |> 
+  dplyr::mutate_if(is.character,str_to_title)
+  
+```
+
+These are the variables we'll just discard from the dataset:
+
+Other_Race, Hispanic, Body_Part_2, Diagnosis_2, Other_Diagnosis, Other_Diagnosis_2, Product_2, Product_3, Alcohol, Drug, Fire_Involvement, Statum, PSU, CPSC_Case_Number and Race.
+
+```{r,warning=FALSE, message=FALSE}
+# column drop
+
+df <- df |> 
+  dplyr::select(-Other_Race,-Hispanic,-Body_Part_2,-Diagnosis_2,
+                -Other_Diagnosis,-Other_Diagnosis_2,-Product_2,
+                -Product_3,-Alcohol,-Drug,-Fire_Involvement,
+                -Stratum, -PSU,-CPSC_Case_Number, -Race)
+
+```
+
+```{r,warning=FALSE, message=FALSE}
+# checking if is there NA values
+colSums(is.na(df))
+```
+
+As we can see, the variables Product_1 still having NA values. As we dont know what kind of Products could replace those, let's just drop them ou of the dataset. We'll also rename the columns, and then save the new dataset.
+
+```{r,warning=FALSE, message=FALSE}
+# renaming variables
+df <- df |> 
+  na.omit()
+
+colnames(df) <- c("Date","Age","Sex","Narrative","Weight","Body_Part",
+                  "Diagnosis","Disposition","Location","Product")
+
+df <- df |> mutate(Date = as.Date(Date,format="%m/%d/%Y"))
+
+
+# saving the dataset
+write.csv2(df,
+           "/mnt/sda1/docs/projects/neiss_analytics/data/processed/neiss_dataset.csv",
+           row.names=FALSE)
+
+```
+
+#### Exploratory Data Analysis
+
+Lets first, verify the number of injuries by period:
+
+```{r,warning=FALSE, message=FALSE}
+df |> 
+  dplyr::group_by(Date) |> 
+  dplyr::summarise(n=n()) |> 
+  ggplot(aes(x=Date,y=n))+
+  geom_line(color ="steelblue")+
+  theme_minimal()+
+  labs(x="",y="",title="Injuries")
+
+```
+
+Looks like 2020 was a little bit atipical comparing to the others years (Maybe the convid-19 pandemic?)
+
+It alsos looks like it isn't a stationary time-series, and looks like we have sort of a seasonality.
+
+We'll gonna back to this later when we'll use machine learning to predict the number of injuries. By now, lets focus on analyze the data.
+
+Considering that each row is as injury, let's take a look on the top 5 injuries, considering the last year, and Weight \> 70
+
+```{r,warning=FALSE, message=FALSE}
+df |> 
+  mutate(year = year(Date)) |> 
+  filter(year == 2021) |> 
+  filter(Weight >70) |> 
+  group_by(Product) |> 
+  dplyr::summarise(n=n()) |> 
+  arrange(desc(n)) |> head(5) |> 
+  ggplot(aes(x=n,y=reorder(Product,n)))+
+  geom_col(color = "steelblue",fill = "steelblue", alpha = c(0.3))+
+  theme_minimal()+
+  labs(x="",y="",title="Injuries by product")
+```
+
+Now that we identified the top 5, let's see more deeply at the number one patterns.
+
+Let's also see Diagnosis, Location e body_parts frequencies.
+
+```{r,warning=FALSE, message=FALSE}
+df |> 
+  mutate(year = year(Date)) |> 
+  filter(year == 2021) |> 
+  filter(Product == "Floors Or Flooring Materials") |> 
+  filter(Weight >70) |> 
+  group_by(Diagnosis) |> 
+  dplyr::summarise(n=n()) |> 
+  arrange(desc(n)) |> head(20) |> 
+  ggplot(aes(x=n,y=reorder(Diagnosis,n)))+
+  geom_col(color = "steelblue",fill = "steelblue", alpha = c(0.3))+
+  theme_minimal()+
+  labs(x="",y="",title="Injuries by Diagnosis")
+```
+
+Internal Organ injury is what mostly appears in the top injuries considering injuries by Floor and Flooring Materials type.
+
+```{r,warning=FALSE, message=FALSE}
+df |> 
+  mutate(year = year(Date)) |> 
+  filter(year == 2021) |> 
+  filter(Weight >70) |> 
+  filter(Product == "Floors Or Flooring Materials") |> 
+  group_by(Location) |> 
+  dplyr::summarise(n=n()) |> 
+  arrange(desc(n)) |> head(20) |> 
+  ggplot(aes(x=n,y=reorder(Location,n)))+
+  geom_col(color = "steelblue",fill = "steelblue", alpha = c(0.3))+
+  theme_minimal()+
+  labs(x="",y="",title="Injuries by location")
+```
+
+And mostly of injuries happens at home.
+
+```{r,warning=FALSE, message=FALSE}
+df |> 
+  mutate(year = year(Date)) |> 
+  filter(year == 2021) |> 
+  filter(Weight >70) |> 
+  filter(Product == "Floors Or Flooring Materials") |> 
+  group_by(Body_Part) |> 
+  dplyr::summarise(n=n()) |> 
+  arrange(desc(n)) |> head(20) |> 
+  ggplot(aes(x=n,y=reorder(Body_Part,n)))+
+  geom_col(color = "steelblue",fill = "steelblue", alpha = c(0.3))+
+  theme_minimal()+
+  labs(x="",y="",title="Injuries by body_part")
+```
+
+Mostly of injuries are in the Head.
+
+Let's take a look at a sample of narratives of those injuries.
+
+```{r,warning=FALSE, message=FALSE}
+# creates a word cloud
+text <- df |> 
+  mutate(year = year(Date)) |> 
+  filter(year == 2021) |> 
+  filter(Weight >70) |> 
+  filter(Product == "Floors Or Flooring Materials") |> 
+  select(Narrative) |> 
+  unique() |> 
+  pull()
+
+docs <- Corpus(VectorSource(text))
+
+docs <- docs %>%
+  tm_map(removeNumbers) %>%
+  tm_map(removePunctuation) %>%
+  tm_map(stripWhitespace)
+docs <- tm_map(docs, content_transformer(tolower))
+docs <- tm_map(docs, removeWords, stopwords("english"))
+
+dtm <- TermDocumentMatrix(docs) 
+matrix <- as.matrix(dtm) 
+words <- sort(rowSums(matrix),decreasing=TRUE) 
+data <- data.frame(word = names(words),freq=words)
+
+wordcloud(words = data$word, freq = data$freq, min.freq = 1,
+          max.words=300, random.order=FALSE, rot.per=0.35,
+          colors=brewer.pal(3, "Dark2"))
+
+```
+
+Now let's visualize the distribution by sex and age of people who suffered this type of injurie.
+
+but first, we'll gonna look the age variable if it has some incosistancy (which is very usual in this kind of variable)
+
+```{r}
+options(scipen = 999)
+df |> ggplot(aes(x=Age))+geom_histogram(fill = "steelblue",alpha=c(0.5),bins=20)+theme_minimal()
+```
+
+Looks like the variable age has some trobles. For example, there are frequencies at age group 200. Lets just consider age \<= 85 years old.
+
+```{r, warning=FALSE,message=FALSE}
+df |> 
+  mutate(year = year(Date),
+         month = month(Date)) |> 
+  filter(Age <= 85) |> 
+  filter(year == 2021) |> 
+  filter(Weight >70)|> 
+  filter(Product == "Floors Or Flooring Materials") |> 
+  dplyr::group_by(Age,Sex) |> 
+  dplyr::summarise(n=n()) |> 
+  ggplot(aes(x=Age,y=n))+
+  geom_line(aes(color = Sex))+
+  theme_minimal()+
+  labs(x="",y="",title="Injuries by sex/age")
+```
+
+That's intersting.. apparently kids and seniors suffer more injuries by floor and flooring materials. That's totally makes senses, but that is a important thing to say: This dataset is about people who went to the hospital and it's not about the population in general.
+
+Another problem is: In general, there are less seniors than young people. It means we'll need to balance the dataset.
+
+We'll do that by creating a injurie rate per population.
+
+In this case, I'll use 10.000 population rate. which follows:
+
+rate = ((n/population) \* 10.000))
+
+To do this right, let's use a population dataset of USA grouped by age and sex.
+
+```{r, message = FALSE, warning=FALSE}
+# load population dataset
+population <- fread("/mnt/sda1/docs/projects/neiss_analytics/data/raw/population.tsv")
+
+# plot output
+df |> 
+  dplyr::mutate(year = year(Date),
+         month = month(Date)) |> 
+  dplyr::filter(Age <= 85) |> 
+  dplyr::filter(year == 2021) |> 
+  dplyr::filter(Weight >70)|> 
+  dplyr::filter(Product == "Floors Or Flooring Materials") |>
+  dplyr::group_by(Age,Sex) |> 
+  dplyr::summarise(n=n()) |> 
+  dplyr::left_join(population |>
+              dplyr::mutate_if(is.character,str_to_title) |> 
+              dplyr::rename(Age=age,Sex=sex),
+              by = c("Sex","Age")) |> 
+  dplyr::mutate(rate = (n/population)*10000) |> 
+  na.omit() |> 
+  ggplot(aes(x=Age,y=rate))+
+  geom_line(aes(color = Sex))+
+  theme_minimal()+
+  labs(x="",y="",title="Injuries by sex/age")
+
+
+```
+
+Now we have a more assertive plot. Looks like how old you get more chances you have to fall on the floor. It makes much sense. We also can see that female in general, has more chance to fall on the floor.
+
+Let's see this particulary age group \>= 60 from the Disposition variable.
+
+A reminder: The "Disposition" variable indicates which treatment the patient get at the hospital facility.
+
+```{r}
+df |> 
+  mutate(year = year(Date),
+         month = month(Date)) |> 
+  filter(Age <= 85) |> 
+  filter(year == 2021) |> 
+  filter(Weight >70,
+         Age >= 60)|> 
+  filter(Product == "Floors Or Flooring Materials") |> 
+  group_by(Disposition) |> 
+  dplyr::summarise(n=n()) |> 
+  arrange(desc(n)) |> 
+  ggplot(aes(x=n,y=reorder(Disposition,n)))+
+  geom_col(color = "black",fill = "red", alpha = c(0.3))+
+  theme_minimal()+
+  labs(x="",y="",title= "Disposition")
+
+
+
+```
+
+In general, mostly of them was treated/Examinade and released.
+
+We could stand and keep analysing every detail of this dataset, and it probably would take hours.
+
+To make it more intuitive, let's build a Shiny App in the Step 3, where we can actually see all details, collect some insights and visualize the injuries forecast for the next 12 months.
+
+we are done for now. Next we'll gonna build our predictive model.
+
+#### Predictive Model
+
+The main objective here is to predict the number of injuries for the next 12 months using the historic data,
+
+First of all, let's transform the dataframe to a time-series object.
+
+```{r}
+df.ts <- df |> 
+  mutate(year=as.character(year(Date)),
+         month=as.character(month(Date)),
+         day= as.character(day(Date))) |> 
+  group_by(Date,year,month,day) |> 
+  dplyr::summarise(n=n()) |> 
+  mutate(month = str_pad(month,width = 2, side="left",pad = 0)) |> 
+  dplyr::mutate(date_char = paste0("01/",month,"/",year)) |> 
+  dplyr::group_by(date_char) |> 
+  dplyr::summarise(n = sum(n)) |> 
+  mutate(date = as.Date(date_char,  format = "%d/%m/%Y"),
+         month = month(date),
+         year = year(date)) |> 
+  select(date_char,date,year,month,n)
+
+df18 <- df.ts |> filter(year == 2018)
+df19 <- df.ts |> filter(year == 2019)
+df20 <- df.ts |> filter(year == 2020)
+df21 <- df.ts |> filter(year == 2021)
+
+df.ts <- rbind(df18,df19,df20,df21)
+
+df_ts <- ts(data = df.ts |> select(n),
+            start = c(2018,1),
+            end = c(2021,12),
+            frequency = 12)
+
+```
+
+And then, studying the data, which follows:
+
+```{r}
+ggseasonplot(df_ts)
+
+```
+
+The seasonal plot shows that apparently there is a trend on february and december.
+
+We can also see a trend over march, april (except 2020 year) and may.
+
+```{r}
+ggseasonplot(df_ts, polar = TRUE)
+
+```
+
+Just a remminder:
+
+**Time-Series:** Any metric that is measured over regular time intervals makes a Time Series. Example: Weather data, Stock prices, Industry forecasts, etc are some of the common ones.
+
+**Stationary time-series:** A time series is said to be stationary if it holds the following conditions true.
+
+1.  The mean value of time-series is constant over time, which implies, the trend component is nullified. 2.The variance does not increase over time. Seasonality effect is minimal.
+
+**Trends:** It means that a particulary time serie is on a trend (up or down) or if its stable. By analysing the trends, we can for example, make some inference if the cases numbers of a disease is gonna grow up or not.
+
+**Seasonality:** Are periodic floatings phenomena that repeats on each period. For example, panettone sales which grows significantly on december.
+
+The behavior of a series can be confirmed by a mathematical model. The most common mathematical models that have a moving premise present the stationary autoregressive models --- AR(p), autoregressive and moving average ARMA(p,q) and autoregressive integrated and average ARIMA(p , d,q).
+
+The Autoregressive (AR) model --- uses the target variable itself to project it from the variable in the past;
+
+A time series follows an autoregressive process when the value of the series at time t depends on what happened at, for example, t-1, t-2, t-3, t-4, etc.
+
+**ARMA (p,q):** Uses both an autoregressive model and a moving average model. It is Auto-regressive (AR), that is, it uses the target variable itself to project it from the variable in the past. It also presents Moving Average (MA), since it uses previous errors to make the forecast;
+
+**ARIMA Model (p,d,q):** Model uses both an integrated autoregressive model and a moving average model. Includes Autoregressive (AR) variable, that is, it uses the target variable itself to project it from the variable in the past. It also presents Moving Average (MA), since it uses previous errors to make the forecast;
+
+```{r}
+# train and test set
+train <- window(df_ts,start=2018, end=2021)
+test <- window(df_ts,start=2021)
+```
+
+#### Exponencial smoothing Model
+
+```{r}
+naive_model = naive(train,h=12)
+accuracy(naive_model)
+```
+
+We'll use accuracy measures to compare to other models later.
+
+```{r}
+autoplot(naive_model)+
+  autolayer(test,series = "test")
+
+checkresiduals(naive_model)
+
+```
+
+#### Holt Model
+
+```{r}
+holt_model=holt(train,h=12,damped = TRUE)
+accuracy(holt_model)
+```
+
+```{r}
+autoplot(holt_model)+
+  autolayer(test,series = "test")
+checkresiduals(holt_model)
+```
+
+#### Holt Winters model:
+
+```{r}
+hw_model=hw(train,h=12)
+accuracy(hw_model)
+
+```
+
+```{r}
+autoplot(hw_model)+
+  autolayer(test,series = "test")
+checkresiduals(hw_model)
+```
+
+#### Comparing accuracy:
+
+Just a reminder:
+
+**RMSE (root mean squared error):** is the measure that calculates "the root mean squared error" of errors between observed (actual) values and predictions (hypotheses).
+
+![](images/rmse.png){width="275"}
+
+**MAPE (mean absolute percentage error** --- also called the mean absolute percentage deviation (MAPD) --- measures accuracy of a forecast system. It measures this accuracy as a percentage, and can be calculated as the average absolute percent error for each time period minus actual values divided by actual values.
+
+![](images/mape.jpeg){width="267"}
+
+**Mean Absolute Scaled Error (MASE)** is a scale-free error metric that gives each error as a ratio compared to a baseline's average error. The advantages of MASE include that it never gives undefined or infinite values and so is a good choice for intermittent-demand series (which arise when there are periods of zero demand in a forecast). It can be used on a single series, or as a tool to compare multiple series.
+
+![](images/mase.png){width="367"}
+
+**Absolute Error is the amount of error in your measurements.** It is the difference between the measured value and "true" value. For example, if a scale states 90 pounds but you know your true weight is 89 pounds, then the scale has an absolute error of 90 lbs -- 89 lbs = 1 lbs.
+
+This can be caused by your scale **not measuring the exact amount you are trying to measure**. For example, your scale may be accurate to the nearest pound. If you weigh 89.6 lbs, the scale may "round up" and give you 90 lbs. In this case the absolute error is 90 lbs -- 89.6 lbs = .4 lbs.
+
+![](images/mae-01.png)
+
+For evaluate our models, we'll use the measure errors: MAPE, MASE, MAE and RMSE
+
+We're looking for lowest value between those models. Lets plot them and compare.
+
+```{r}
+df_a=as.data.frame(accuracy(holt_model))
+
+
+df_a = df_a |> mutate(model = "holt_model")
+
+df_b=as.data.frame(accuracy(hw_model))
+df_b <- df_b |> mutate(model = "hw")
+
+df_c=as.data.frame(accuracy(naive_model))
+
+df_c=df_c |> mutate(model = "naive")
+
+measures = rbind(df_a,df_b,df_c)
+
+p1 <- measures |> 
+  ggplot(aes(x = MAPE,
+             y = model))+
+  geom_col(aes(color = model, fill = model), alpha = c(0.3))+
+  theme_minimal()+labs(title ="MAPE",x="",y="")+
+  theme(legend.position = "none")
+
+
+p2 <- measures |> 
+  ggplot(aes(x = MASE,
+             y = model))+
+  geom_col(aes(color = model, fill = model), alpha = c(0.3))+
+  theme_minimal()+labs(title ="MASE",x="",y="")+
+  theme(legend.position = "none")
+
+
+
+p3 <- measures |> 
+  ggplot(aes(x = RMSE,
+             y = model))+
+  geom_col(aes(color = model, fill = model), alpha = c(0.3))+
+  theme_minimal()+labs(title ="RMSE",x="",y="")+
+  theme(legend.position = "none")
+
+
+
+p4 <- measures |> 
+  ggplot(aes(x = MAE,
+             y = model))+
+  geom_col(aes(color = model, fill = model), alpha = c(0.3))+
+  theme_minimal()+labs(title ="MAE",x="",y="")+
+  theme(legend.position = "none")
+
+
+gridExtra::grid.arrange(p1,p2,p3,p4)
+
+```
+
+On this comparison, the best model is Holt Winters, because it hits the lowest value.
+
+```{r}
+checkresiduals(hw_model)
+```
+
+About the residuals:
+
+-   The ACF plot does not show correlational significants errors.
+
+-   The residuals looks almost like a bell shape, what indicates that residuals are most freqnently at the middle.
+
+-   Unfortunately, the Ljung-Box test indicates a p-value below 0.05. It not necessary bad, but how closely p-value is from 0.05 more stable the model is. However, we gonna keep this model because the others premisses looks ok.
+
+Then lets just save the dataset and we're done.
+
+```{r}
+# save the predictions dataset
+
+hw_model <- hw(train, h=25)
+
+predictions <- as.data.frame(hw_model)
+
+
+
+predictions <- predictions |> mutate(date=row.names(predictions))
+
+predictions <- predictions |> filter(grepl("2022",date)) |> select(1) |> as_tibble()
+predictions <- predictions |> 
+  mutate(date = c("01/01/2022",
+                  "01/02/2022",
+                  "01/03/2022",
+                  "01/04/2022",
+                  "01/05/2022",
+                  "01/06/2022",
+                  "01/07/2022",
+                  "01/08/2022",
+                  "01/09/2022",
+                  "01/10/2022",
+                  "01/11/2022",
+                  "01/12/2022")) |> 
+  select(date,1) |> 
+  dplyr::rename(forecast=`Point Forecast`) |> 
+  as_tibble()
+
+
+df.ts2 <- rbind(df.ts |> 
+                  select(date,n) |> 
+                  dplyr::rename(forecast = n),
+                predictions |> 
+                  mutate(date = as.Date(date, format = "%d/%m/%Y"))) |> 
+  mutate(type = ifelse(year(date) == "2022","forecast","real"))
+
+
+df.ts2 <- df.ts2 |> mutate(forecast=round(forecast))
+
+
+write.csv2(df.ts2,
+           "/mnt/sda1/docs/projects/neiss_analytics/data/processed/forecast.csv",
+           row.names=FALSE)
+
+```
+
+Final considerations:
+
+We end up the project here. The web app script is avaible on the [github project repository](https://github.com/sandropenha/NEISS-Analytics-Model-App)
+
+Feel free to contact me on [linkedin](https://www.linkedin.com/in/sandropenha/) if there is any doubt or suggestion.
